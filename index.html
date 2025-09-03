@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Catalog Generator</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PapaParse for CSV parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Custom styles for the page */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* A light gray background */
+        }
+        /* Custom class for drag-over effect */
+        .drag-over {
+            border-color: #3b82f6; /* Blue-500 */
+            background-color: #eff6ff; /* Blue-50 */
+        }
+        /* Hide the default file input */
+        #file-input, #size-file-input {
+            display: none;
+        }
+        /* Style for product cards */
+        .product-card {
+            transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+            display: flex;
+            flex-direction: column;
+        }
+        .product-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        .product-card-content {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+        }
+        .product-card-details {
+            margin-top: auto;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <!-- Modal for notifications -->
+    <div id="notification-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg shadow-xl p-8 w-11/12 max-w-sm text-center">
+            <p id="modal-message" class="text-gray-700 mb-6 text-lg"></p>
+            <button id="modal-close-btn" class="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">OK</button>
+        </div>
+    </div>
+
+    <!-- Uploader Section -->
+    <div id="uploader-section" class="flex items-center justify-center min-h-screen">
+        <div class="w-full max-w-2xl mx-auto p-4 md:p-8">
+            <div class="bg-white rounded-2xl shadow-xl p-6 md:p-8">
+                <h1 class="text-2xl md:text-3xl font-bold text-center text-gray-800 mb-2">Create Your Product Catalog</h1>
+                <p class="text-center text-gray-500 mb-8">Upload your main product CSV file to get started</p>
+                <div id="dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer transition-colors duration-300 ease-in-out hover:border-blue-500 hover:bg-blue-50">
+                    <input type="file" id="file-input" accept=".csv">
+                    <div class="flex flex-col items-center justify-center text-gray-500">
+                        <i class="fas fa-cloud-arrow-up fa-3x mb-4 text-gray-400"></i>
+                        <p class="font-semibold">Drop main CSV file here</p>
+                        <p class="text-sm mt-1">or</p>
+                        <button id="browse-btn" type="button" class="mt-4 px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors">Browse File</button>
+                    </div>
+                </div>
+                 <div id="loading-indicator" class="text-center mt-4 hidden"><i class="fas fa-spinner fa-spin mr-2"></i> Processing file...</div>
+            </div>
+            <footer class="text-center mt-6 text-sm text-gray-500"><p>&copy; 2024 Catalog Generator Inc. All rights reserved.</p></footer>
+        </div>
+    </div>
+
+    <!-- Catalog Section -->
+    <div id="catalog-section" class="hidden w-full max-w-7xl mx-auto p-4 md:p-8">
+        <div class="flex flex-col sm:flex-row justify-between sm:items-center mb-6 gap-4">
+            <h1 class="text-3xl font-bold text-gray-800">Product Catalog</h1>
+            <div class="flex items-center gap-2">
+                 <button id="upload-size-file-btn" class="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors flex items-center justify-center">
+                    <i class="fas fa-ruler-horizontal mr-2"></i>Upload Size File
+                </button>
+                <input type="file" id="size-file-input" accept=".csv">
+                <button id="back-to-upload-btn" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors flex items-center justify-center"><i class="fas fa-upload mr-2"></i>Upload New Main File</button>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl shadow-md mb-8 sticky top-4 z-10">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                <input type="search" id="search-input" placeholder="Search by name or SN..." class="lg:col-span-2 w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                <select id="filter-secondary-cat" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"></select>
+                <select id="filter-tertiary-cat" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"></select>
+                <button id="reset-filters" class="px-4 py-2 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-700 transition-colors">Reset</button>
+            </div>
+        </div>
+        <div id="product-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6"></div>
+        <div id="no-results" class="text-center py-16 text-gray-500 hidden"><i class="fas fa-box-open fa-3x mb-4"></i><p class="text-xl">No products found that match your criteria.</p></div>
+    </div>
+
+    <!-- Floating Cart Button -->
+    <button id="cart-button" class="hidden fixed bottom-8 right-8 bg-blue-600 text-white w-16 h-16 rounded-full shadow-lg flex items-center justify-center text-2xl hover:bg-blue-700 transition-transform hover:scale-110">
+        <i class="fas fa-shopping-cart"></i>
+        <span id="cart-count" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full h-6 w-6 flex items-center justify-center">0</span>
+    </button>
+    
+    <!-- Cart Modal -->
+    <div id="cart-modal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+        <div class="bg-white rounded-lg shadow-xl w-11/12 max-w-2xl flex flex-col" style="max-height: 90vh;">
+            <div class="flex justify-between items-center p-4 border-b">
+                <h2 class="text-2xl font-bold text-gray-800">Your Cart</h2>
+                <button id="cart-close-btn" class="text-gray-500 hover:text-gray-800 text-2xl">&times;</button>
+            </div>
+            <div id="cart-items" class="p-4 overflow-y-auto">
+                <!-- Cart items will be here -->
+            </div>
+            <div id="cart-footer" class="p-4 border-t mt-auto">
+                 <div id="cart-empty-message" class="text-center text-gray-500 py-8">
+                    <i class="fas fa-shopping-cart fa-3x mb-4"></i>
+                    <p>Your cart is empty.</p>
+                </div>
+                <div id="cart-summary" class="hidden">
+                    <div class="flex justify-between items-center mb-4">
+                        <span class="text-lg font-medium text-gray-700">Total:</span>
+                        <span id="cart-total" class="text-2xl font-bold text-gray-900">$0.00</span>
+                    </div>
+                    <button id="checkout-btn" class="w-full py-3 bg-green-600 text-white rounded-lg font-semibold text-lg hover:bg-green-700 transition-colors">Checkout & Export SKUs</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const uploaderSection = document.getElementById('uploader-section');
+        const catalogSection = document.getElementById('catalog-section');
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('file-input');
+        const browseBtn = document.getElementById('browse-btn');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const notificationModal = document.getElementById('notification-modal');
+        const modalMessage = document.getElementById('modal-message');
+        const modalCloseBtn = document.getElementById('modal-close-btn');
+        const backToUploadBtn = document.getElementById('back-to-upload-btn');
+        const uploadSizeFileBtn = document.getElementById('upload-size-file-btn');
+        const sizeFileInput = document.getElementById('size-file-input');
+        const searchInput = document.getElementById('search-input');
+        const secondaryCatFilter = document.getElementById('filter-secondary-cat');
+        const tertiaryCatFilter = document.getElementById('filter-tertiary-cat');
+        const resetBtn = document.getElementById('reset-filters');
+        const productGrid = document.getElementById('product-grid');
+        const noResults = document.getElementById('no-results');
+        const cartButton = document.getElementById('cart-button');
+        const cartCount = document.getElementById('cart-count');
+        const cartModal = document.getElementById('cart-modal');
+        const cartCloseBtn = document.getElementById('cart-close-btn');
+        const cartItemsContainer = document.getElementById('cart-items');
+        const cartFooter = document.getElementById('cart-footer');
+        const cartEmptyMessage = document.getElementById('cart-empty-message');
+        const cartSummary = document.getElementById('cart-summary');
+        const cartTotal = document.getElementById('cart-total');
+        const checkoutBtn = document.getElementById('checkout-btn');
+
+        // State
+        let allProducts = [];
+        let cart = [];
+
+        // --- Functions ---
+        const showNotification = (message) => {
+            modalMessage.textContent = message;
+            notificationModal.classList.remove('hidden');
+        };
+
+        const handleFile = (file) => {
+            if (!file || !file.name.endsWith('.csv')) {
+                showNotification('Please upload a valid CSV file.');
+                return;
+            }
+            loadingIndicator.classList.remove('hidden');
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                transformHeader: header => header.trim(),
+                complete: (results) => {
+                    if (results.errors.length > 0) console.error("Parsing errors:", results.errors);
+                    allProducts = results.data.map(row => ({
+                        sn: row.goods_sn ? row.goods_sn.trim() : null,
+                        imageUrl: row.url,
+                        type: row['Needle and Woven'],
+                        secondaryCategory: row['Secondary commodity classification'],
+                        tertiaryCategory: row['Three-level commodity classification'],
+                        name: row['Product Categories'],
+                        inventory: parseInt(row.inventory, 10) || 0,
+                        price: parseFloat(row.price) || 0,
+                        sizes: [] // Initialize sizes array
+                    })).filter(p => p.sn && p.imageUrl && p.name);
+
+                    if (allProducts.length > 0) {
+                        displayCatalog();
+                    } else {
+                        showNotification("Could not find valid product data in the file. Please check the column headers.");
+                    }
+                    loadingIndicator.classList.add('hidden');
+                },
+                error: (error) => {
+                    console.error("Error parsing CSV:", error);
+                    showNotification("An error occurred while parsing the file.");
+                    loadingIndicator.classList.add('hidden');
+                }
+            });
+        };
+        
+        const handleSizeFile = (file) => {
+            if (!file || !file.name.endsWith('.csv')) {
+                showNotification('Please upload a valid size CSV file.');
+                return;
+            }
+            showNotification('Processing size file...'); // Temp notification
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                transformHeader: header => header.trim(),
+                complete: (results) => {
+                    const sizesBySn = {};
+                    results.data.forEach(row => {
+                        const sn = row.goods_sn ? row.goods_sn.trim() : null;
+                        if (!sn) return;
+                        if (!sizesBySn[sn]) {
+                            sizesBySn[sn] = [];
+                        }
+                        sizesBySn[sn].push({
+                            size: row.sku_size,
+                            inventory: parseInt(row.inventory, 10) || 0
+                        });
+                    });
+
+                    let matchCount = 0;
+                    allProducts.forEach(product => {
+                        if (sizesBySn[product.sn]) {
+                            product.sizes = sizesBySn[product.sn];
+                            matchCount++;
+                        }
+                    });
+                    
+                    showNotification(`${matchCount} products updated with size information.`);
+                    filterAndRender(); // Re-render products to show new size info
+                },
+                error: (error) => {
+                    console.error("Error parsing size CSV:", error);
+                    showNotification("An error occurred while parsing the size file.");
+                }
+            });
+        };
+
+        const displayCatalog = () => {
+            uploaderSection.classList.add('hidden');
+            catalogSection.classList.remove('hidden');
+            cartButton.classList.remove('hidden');
+            populateFilters();
+            renderProducts(allProducts);
+        };
+        
+        const resetToUploader = () => {
+            catalogSection.classList.add('hidden');
+            cartButton.classList.add('hidden');
+            uploaderSection.classList.remove('hidden');
+            allProducts = [];
+            cart = [];
+            updateCart();
+            productGrid.innerHTML = '';
+            searchInput.value = '';
+            secondaryCatFilter.innerHTML = '';
+            tertiaryCatFilter.innerHTML = '';
+        };
+
+        const populateFilters = () => {
+            const secondaryCats = ['All Secondary Categories', ...new Set(allProducts.map(p => p.secondaryCategory).filter(Boolean))];
+            const tertiaryCats = ['All Product Categories', ...new Set(allProducts.map(p => p.tertiaryCategory).filter(Boolean))];
+            secondaryCatFilter.innerHTML = secondaryCats.map(cat => `<option value="${cat}">${cat}</option>`).join('');
+            tertiaryCatFilter.innerHTML = tertiaryCats.map(cat => `<option value="${cat}">${cat}</option>`).join('');
+        };
+        
+        const renderProducts = (products) => {
+            productGrid.innerHTML = '';
+            noResults.classList.toggle('hidden', products.length > 0);
+            productGrid.classList.toggle('hidden', products.length === 0);
+
+            products.forEach(product => {
+                const card = document.createElement('div');
+                card.className = 'product-card bg-white rounded-lg shadow-md overflow-hidden';
+                const isInCart = cart.some(item => item.sn === product.sn);
+                
+                let sizesHtml = '';
+                if (product.sizes && product.sizes.length > 0) {
+                    sizesHtml = `
+                        <div class="mt-3 pt-3 border-t border-gray-200">
+                            <h4 class="text-xs font-bold text-gray-600 mb-2">Sizes Available:</h4>
+                            <div class="flex flex-wrap gap-2 text-xs">
+                                ${product.sizes.map(s => `<span class="bg-gray-200 text-gray-800 font-medium px-2 py-1 rounded-full">${s.size} (${s.inventory})</span>`).join('')}
+                            </div>
+                        </div>`;
+                }
+
+                card.innerHTML = `
+                    <div class="h-64 bg-gray-200"><img src="${product.imageUrl}" alt="${product.name}" class="w-full h-full object-cover" onerror="this.onerror=null;this.src='https://placehold.co/400x400/e2e8f0/94a3b8?text=Image+Not+Found';"></div>
+                    <div class="p-4 product-card-content">
+                        <h3 class="text-lg font-semibold text-gray-800 truncate" title="${product.name}">${product.name}</h3>
+                        <p class="text-sm text-gray-500 mb-2">${product.tertiaryCategory || ''}</p>
+                        <div class="product-card-details">
+                            <p class="text-xl font-bold text-blue-600">$${product.price}</p>
+                            <div class="flex justify-between items-center text-xs text-gray-500 mt-1 mb-3"><span>Total Stock: ${product.inventory}</span><span>SN: ${product.sn}</span></div>
+                            ${sizesHtml}
+                            <button data-sn="${product.sn}" class="add-to-cart-btn w-full py-2 rounded-lg font-semibold transition-colors mt-3 ${isInCart ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}" ${isInCart ? 'disabled' : ''}>
+                                ${isInCart ? 'Added to Cart' : 'Add to Cart'}
+                            </button>
+                        </div>
+                    </div>
+                `;
+                productGrid.appendChild(card);
+            });
+        };
+
+        const filterAndRender = () => {
+            const searchTerm = searchInput.value.toLowerCase();
+            const selectedSecondaryCat = secondaryCatFilter.value;
+            const selectedTertiaryCat = tertiaryCatFilter.value;
+
+            let filteredProducts = allProducts.filter(p => 
+                (!searchTerm || p.name.toLowerCase().includes(searchTerm) || p.sn.toLowerCase().includes(searchTerm)) &&
+                (selectedSecondaryCat === 'All Secondary Categories' || p.secondaryCategory === selectedSecondaryCat) &&
+                (selectedTertiaryCat === 'All Product Categories' || p.tertiaryCategory === selectedTertiaryCat)
+            );
+            renderProducts(filteredProducts);
+        };
+        
+        const updateCart = () => {
+            cartCount.textContent = cart.length;
+            cartItemsContainer.innerHTML = '';
+            
+            if (cart.length === 0) {
+                cartEmptyMessage.classList.remove('hidden');
+                cartSummary.classList.add('hidden');
+            } else {
+                cartEmptyMessage.classList.add('hidden');
+                cartSummary.classList.remove('hidden');
+                
+                let total = 0;
+                cart.forEach(item => {
+                    const itemTotal = item.price;
+                    total += itemTotal;
+                    const cartItemEl = document.createElement('div');
+                    cartItemEl.className = 'flex items-center justify-between p-2 border-b';
+                    cartItemEl.innerHTML = `
+                        <div class="flex items-center gap-4">
+                            <img src="${item.imageUrl}" class="w-16 h-16 object-cover rounded-md bg-gray-200">
+                            <div>
+                                <p class="font-semibold text-gray-800">${item.name}</p>
+                                <p class="text-sm text-gray-500">SN: ${item.sn} (${item.inventory} units)</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                           <p class="font-bold text-gray-800">$${item.price}</p>
+                           <button data-sn="${item.sn}" class="remove-from-cart-btn text-red-500 hover:text-red-700 text-sm font-medium">Remove</button>
+                        </div>
+                    `;
+                    cartItemsContainer.appendChild(cartItemEl);
+                });
+                cartTotal.textContent = `$${total.toFixed(2)}`;
+            }
+        };
+        
+        const handleCheckout = () => {
+            if (cart.length === 0) {
+                showNotification("Your cart is empty.");
+                return;
+            }
+            const headers = "goods_sn";
+            const csvContent = cart.map(item => item.sn).join('\n');
+            const csv = `${headers}\n${csvContent}`;
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            if (link.download !== undefined) {
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", "checkout_skus.csv");
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+            cartModal.classList.add('hidden');
+        };
+
+        // --- Event Listeners ---
+        dropzone.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('drag-over'); });
+        dropzone.addEventListener('dragenter', (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('drag-over'); });
+        dropzone.addEventListener('dragleave', (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('drag-over'); });
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropzone.classList.remove('drag-over');
+            handleFile(e.dataTransfer.files[0]);
+        });
+        dropzone.addEventListener('click', () => fileInput.click());
+        browseBtn.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
+        fileInput.addEventListener('change', (e) => { handleFile(e.target.files[0]); e.target.value = null; });
+        
+        uploadSizeFileBtn.addEventListener('click', () => sizeFileInput.click());
+        sizeFileInput.addEventListener('change', (e) => { handleSizeFile(e.target.files[0]); e.target.value = null; });
+
+        modalCloseBtn.addEventListener('click', () => notificationModal.classList.add('hidden'));
+        backToUploadBtn.addEventListener('click', resetToUploader);
+        searchInput.addEventListener('input', filterAndRender);
+        secondaryCatFilter.addEventListener('change', filterAndRender);
+        tertiaryCatFilter.addEventListener('change', filterAndRender);
+        resetBtn.addEventListener('click', () => {
+            searchInput.value = '';
+            secondaryCatFilter.value = 'All Secondary Categories';
+            tertiaryCatFilter.value = 'All Product Categories';
+            filterAndRender();
+        });
+
+        productGrid.addEventListener('click', (e) => {
+            if (e.target.classList.contains('add-to-cart-btn')) {
+                const sn = e.target.dataset.sn;
+                const productToAdd = allProducts.find(p => p.sn === sn);
+                if (productToAdd) {
+                    cart.push(productToAdd);
+                    e.target.textContent = 'Added to Cart';
+                    e.target.disabled = true;
+                    e.target.classList.remove('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+                    e.target.classList.add('bg-gray-400', 'cursor-not-allowed');
+                    updateCart();
+                }
+            }
+        });
+        
+        cartItemsContainer.addEventListener('click', (e) => {
+            if (e.target.classList.contains('remove-from-cart-btn')) {
+                const snToRemove = e.target.dataset.sn;
+                cart = cart.filter(item => item.sn !== snToRemove);
+                
+                const buttonToUpdate = productGrid.querySelector(`.add-to-cart-btn[data-sn="${snToRemove}"]`);
+                if (buttonToUpdate) {
+                    buttonToUpdate.textContent = 'Add to Cart';
+                    buttonToUpdate.disabled = false;
+                    buttonToUpdate.classList.add('bg-blue-600', 'hover:bg-blue-700', 'text-white');
+                    buttonToUpdate.classList.remove('bg-gray-400', 'cursor-not-allowed');
+                }
+                updateCart();
+            }
+        });
+        
+        cartButton.addEventListener('click', () => cartModal.classList.remove('hidden'));
+        cartCloseBtn.addEventListener('click', () => cartModal.classList.add('hidden'));
+        checkoutBtn.addEventListener('click', handleCheckout);
+    </script>
+</body>
+</html>
+
