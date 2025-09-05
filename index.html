@@ -26,7 +26,7 @@
             background-color: #eff6ff; /* Blue-50 */
         }
         /* Hide the default file input */
-        #file-input, #size-file-input {
+        #file-input, #size-file-input, #main-file-input {
             display: none;
         }
         /* Style for product cards */
@@ -75,6 +75,11 @@
                     </div>
                 </div>
                  <div id="loading-indicator" class="text-center mt-4 hidden"><i class="fas fa-spinner fa-spin mr-2"></i> Processing file...</div>
+                 <div class="text-center mt-6">
+                    <button id="view-catalog-btn" class="hidden px-6 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors">
+                        <i class="fas fa-eye mr-2"></i>View Existing Catalog
+                    </button>
+                </div>
             </div>
             <footer class="text-center mt-6 text-sm text-gray-500"><p>&copy; 2024 Catalog Generator Inc. All rights reserved.</p></footer>
         </div>
@@ -84,10 +89,14 @@
     <div id="catalog-section" class="hidden w-full max-w-7xl mx-auto p-4 md:p-8">
         <div class="flex flex-col sm:flex-row justify-between sm:items-center mb-6 gap-4">
             <h1 class="text-3xl font-bold text-gray-800">Product Catalog</h1>
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap justify-end">
+                 <button id="upload-main-file-btn" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors flex items-center justify-center">
+                    <i class="fas fa-plus mr-2"></i>Add More SKUs
+                </button>
                  <button id="upload-size-file-btn" class="px-4 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 transition-colors flex items-center justify-center">
                     <i class="fas fa-ruler-horizontal mr-2"></i>Upload Size File
                 </button>
+                <input type="file" id="main-file-input" accept=".csv">
                 <input type="file" id="size-file-input" accept=".csv">
                 <button id="back-to-upload-btn" class="px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors flex items-center justify-center"><i class="fas fa-trash mr-2"></i>Delete & Upload New</button>
             </div>
@@ -139,7 +148,7 @@
     <script type="module">
         // Firebase Imports
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
+        // import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, onSnapshot, setDoc, deleteDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -148,14 +157,17 @@
         const catalogSection = document.getElementById('catalog-section');
         const dropzone = document.getElementById('dropzone');
         const fileInput = document.getElementById('file-input');
+        const mainFileInput = document.getElementById('main-file-input');
         const browseBtn = document.getElementById('browse-btn');
         const loadingIndicator = document.getElementById('loading-indicator');
         const notificationModal = document.getElementById('notification-modal');
         const modalMessage = document.getElementById('modal-message');
         const modalCloseBtn = document.getElementById('modal-close-btn');
         const backToUploadBtn = document.getElementById('back-to-upload-btn');
+        const uploadMainFileBtn = document.getElementById('upload-main-file-btn');
         const uploadSizeFileBtn = document.getElementById('upload-size-file-btn');
         const sizeFileInput = document.getElementById('size-file-input');
+        const viewCatalogBtn = document.getElementById('view-catalog-btn');
         const searchInput = document.getElementById('search-input');
         const secondaryCatFilter = document.getElementById('filter-secondary-cat');
         const tertiaryCatFilter = document.getElementById('filter-tertiary-cat');
@@ -185,7 +197,7 @@
             notificationModal.classList.remove('hidden');
         };
 
-        const handleFile = (file) => {
+        const handleFile = (file, isAppending = false) => {
             if (!file || !file.name.endsWith('.csv')) {
                 showNotification('Please upload a valid CSV file.');
                 return;
@@ -197,7 +209,12 @@
                 transformHeader: header => header.trim(),
                 complete: async (results) => {
                     loadingIndicator.classList.add('hidden');
-                    if (results.errors.length > 0) console.error("Parsing errors:", results.errors);
+                    if (results.errors.length > 0) {
+                        console.error("Parsing errors:", results.errors);
+                        showNotification("Could not parse the file. Please check for errors in the CSV.");
+                        return;
+                    }
+
                     const parsedProducts = results.data.map(row => ({
                         sn: row.goods_sn ? row.goods_sn.trim() : null,
                         imageUrl: row.url,
@@ -210,22 +227,40 @@
                         sizes: []
                     })).filter(p => p.sn && p.imageUrl && p.name);
 
-                    if (parsedProducts.length > 0) {
-                        if (isDbConnected) {
-                            try {
-                                await setDoc(catalogDocRef, { productsJSON: JSON.stringify(parsedProducts) });
-                                showNotification("Catalog created and saved successfully!");
-                            } catch (error) {
-                                console.error("Error saving to Firestore:", error);
-                                showNotification("Error saving catalog. Please try again.");
-                            }
-                        } else {
-                            allProducts = parsedProducts;
+                    if (parsedProducts.length === 0) {
+                        showNotification("Could not find valid product data in the file. Please check the column headers.");
+                        return;
+                    }
+
+                    let productsToSave = [];
+                    let notificationMessage = "";
+
+                    if (isAppending) {
+                        const existingSns = new Set(allProducts.map(p => p.sn));
+                        const newProducts = parsedProducts.filter(p => !existingSns.has(p.sn));
+                        productsToSave = [...allProducts, ...newProducts];
+                        notificationMessage = `${newProducts.length} new SKU(s) added to the catalog.`;
+                    } else {
+                        productsToSave = parsedProducts;
+                        notificationMessage = "Catalog created and saved successfully!";
+                    }
+
+                    if (isDbConnected) {
+                        try {
+                            await setDoc(catalogDocRef, { productsJSON: JSON.stringify(productsToSave) });
+                             // Update local state and UI immediately for better UX. 
+                            // The onSnapshot listener will keep it in sync with any other changes.
+                            allProducts = productsToSave;
                             displayCatalog();
-                            showNotification("Catalog loaded in local mode. Data will not be saved online.");
+                            showNotification(notificationMessage);
+                        } catch (error) {
+                            console.error("Error saving to Firestore:", error);
+                            showNotification("Error saving file. Please check Firestore rules and API key restrictions.");
                         }
                     } else {
-                        showNotification("Could not find valid product data in the file. Please check the column headers.");
+                        allProducts = productsToSave;
+                        displayCatalog();
+                        showNotification("Catalog loaded in local mode. Data will not be saved online.");
                     }
                 },
                 error: (error) => {
@@ -450,31 +485,49 @@
               appId: "1:880522082080:web:d268745e68275143288945",
               measurementId: "G-WJXLNF2969"
             };
-            const appId = firebaseConfig.projectId;
 
             isDbConnected = true;
             const app = initializeApp(firebaseConfig);
-            const analytics = getAnalytics(app);
+            // const analytics = getAnalytics(app); // Analytics is not essential and can cause permission errors in some environments.
             db = getFirestore(app);
             auth = getAuth(app);
             setLogLevel('debug');
-            catalogDocRef = doc(db, `artifacts/${appId}/public/data/products/catalogData`);
+            // SIMPLIFIED DATABASE PATH for standalone deployment
+            catalogDocRef = doc(db, 'products/catalogData');
 
             try {
                 await signInAnonymously(auth);
                 console.log("Firebase Auth successful. User:", auth.currentUser?.uid);
                 
                 onSnapshot(catalogDocRef, (docSnap) => {
-                    if (docSnap.exists() && docSnap.data().productsJSON) {
+                    const hasData = docSnap.exists() && docSnap.data().productsJSON;
+                    
+                    if (hasData) {
                         try {
-                            allProducts = JSON.parse(docSnap.data().productsJSON);
-                            displayCatalog();
+                            const productsFromDB = JSON.parse(docSnap.data().productsJSON);
+                            allProducts = Array.isArray(productsFromDB) ? productsFromDB : [];
                         } catch (e) {
                             console.error("Error parsing products from Firestore:", e);
-                            resetToUploader(false);
+                            allProducts = [];
                         }
                     } else {
-                        resetToUploader(false);
+                        allProducts = [];
+                    }
+
+                    // Always update the visibility of the "View Catalog" button based on whether data exists.
+                    viewCatalogBtn.classList.toggle('hidden', allProducts.length === 0);
+
+                    // If we are currently viewing the catalog, we need to react to changes.
+                    if (!catalogSection.classList.contains('hidden')) {
+                        if (allProducts.length > 0) {
+                            // Data was updated (or added) while viewing, so re-render the products.
+                            populateFilters();
+                            filterAndRender();
+                        } else {
+                            // Data was deleted while we were viewing it, so go back to the uploader.
+                            resetToUploader(false);
+                            showNotification("The catalog has been cleared.");
+                        }
                     }
                 });
 
@@ -482,7 +535,13 @@
                 console.error("Firebase Authentication Error:", error);
                  if (error.code === 'auth/configuration-not-found') {
                      showNotification("Authentication failed. Please go to your Firebase project, open the Authentication section, go to the 'Sign-in method' tab, and enable 'Anonymous' sign-in.");
-                } else {
+                } else if (error.code && error.code.includes('requests-from-referer')) {
+                    const prefix = 'auth/requests-from-referer-';
+                    const suffix = '-are-blocked.';
+                    const url = error.code.substring(prefix.length, error.code.length - suffix.length);
+                    showNotification(`Permission Denied: The domain '${url}' is not authorized. Please go to the Google Cloud Console, edit the API key for your project, and add this domain to the 'Application restrictions' to allow access.`);
+                }
+                else {
                     showNotification("Could not connect to the database. Check console for details.");
                 }
             }
@@ -495,15 +554,18 @@
         dropzone.addEventListener('drop', (e) => {
             e.preventDefault(); e.stopPropagation();
             dropzone.classList.remove('drag-over');
-            handleFile(e.dataTransfer.files[0]);
+            handleFile(e.dataTransfer.files[0], false);
         });
         dropzone.addEventListener('click', () => fileInput.click());
         browseBtn.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
-        fileInput.addEventListener('change', (e) => { handleFile(e.target.files[0]); e.target.value = null; });
+        fileInput.addEventListener('change', (e) => { handleFile(e.target.files[0], false); e.target.value = null; });
+        uploadMainFileBtn.addEventListener('click', () => mainFileInput.click());
+        mainFileInput.addEventListener('change', (e) => { handleFile(e.target.files[0], true); e.target.value = null; });
         uploadSizeFileBtn.addEventListener('click', () => sizeFileInput.click());
         sizeFileInput.addEventListener('change', (e) => { handleSizeFile(e.target.files[0]); e.target.value = null; });
         modalCloseBtn.addEventListener('click', () => notificationModal.classList.add('hidden'));
         backToUploadBtn.addEventListener('click', () => resetToUploader(true));
+        viewCatalogBtn.addEventListener('click', displayCatalog);
         searchInput.addEventListener('input', filterAndRender);
         secondaryCatFilter.addEventListener('change', filterAndRender);
         tertiaryCatFilter.addEventListener('change', filterAndRender);
