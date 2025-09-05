@@ -89,7 +89,7 @@
                     <i class="fas fa-ruler-horizontal mr-2"></i>Upload Size File
                 </button>
                 <input type="file" id="size-file-input" accept=".csv">
-                <button id="back-to-upload-btn" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors flex items-center justify-center"><i class="fas fa-upload mr-2"></i>Upload New Main File</button>
+                <button id="back-to-upload-btn" class="px-4 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors flex items-center justify-center"><i class="fas fa-trash mr-2"></i>Delete & Upload New</button>
             </div>
         </div>
         <div class="bg-white p-4 rounded-xl shadow-md mb-8 sticky top-4 z-10">
@@ -136,7 +136,12 @@
         </div>
     </div>
 
-    <script>
+    <script type="module">
+        // Firebase Imports
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, deleteDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
         // DOM Elements
         const uploaderSection = document.getElementById('uploader-section');
         const catalogSection = document.getElementById('catalog-section');
@@ -170,6 +175,7 @@
         // State
         let allProducts = [];
         let cart = [];
+        let db, auth, catalogDocRef;
 
         // --- Functions ---
         const showNotification = (message) => {
@@ -187,9 +193,10 @@
                 header: true,
                 skipEmptyLines: true,
                 transformHeader: header => header.trim(),
-                complete: (results) => {
+                complete: async (results) => {
+                    loadingIndicator.classList.add('hidden');
                     if (results.errors.length > 0) console.error("Parsing errors:", results.errors);
-                    allProducts = results.data.map(row => ({
+                    const parsedProducts = results.data.map(row => ({
                         sn: row.goods_sn ? row.goods_sn.trim() : null,
                         imageUrl: row.url,
                         type: row['Needle and Woven'],
@@ -198,15 +205,20 @@
                         name: row['Product Categories'],
                         inventory: parseInt(row.inventory, 10) || 0,
                         price: parseFloat(row.price) || 0,
-                        sizes: [] // Initialize sizes array
+                        sizes: []
                     })).filter(p => p.sn && p.imageUrl && p.name);
 
-                    if (allProducts.length > 0) {
-                        displayCatalog();
+                    if (parsedProducts.length > 0) {
+                        try {
+                            await setDoc(catalogDocRef, { productsJSON: JSON.stringify(parsedProducts) });
+                            showNotification("Catalog created and saved successfully!");
+                        } catch (error) {
+                            console.error("Error saving to Firestore:", error);
+                            showNotification("Error saving catalog. Please try again.");
+                        }
                     } else {
                         showNotification("Could not find valid product data in the file. Please check the column headers.");
                     }
-                    loadingIndicator.classList.add('hidden');
                 },
                 error: (error) => {
                     console.error("Error parsing CSV:", error);
@@ -221,19 +233,17 @@
                 showNotification('Please upload a valid size CSV file.');
                 return;
             }
-            showNotification('Processing size file...'); // Temp notification
+            showNotification('Processing size file...');
             Papa.parse(file, {
                 header: true,
                 skipEmptyLines: true,
                 transformHeader: header => header.trim(),
-                complete: (results) => {
+                complete: async (results) => {
                     const sizesBySn = {};
                     results.data.forEach(row => {
                         const sn = row.goods_sn ? row.goods_sn.trim() : null;
                         if (!sn) return;
-                        if (!sizesBySn[sn]) {
-                            sizesBySn[sn] = [];
-                        }
+                        if (!sizesBySn[sn]) sizesBySn[sn] = [];
                         sizesBySn[sn].push({
                             size: row.sku_size,
                             inventory: parseInt(row.inventory, 10) || 0
@@ -241,15 +251,21 @@
                     });
 
                     let matchCount = 0;
-                    allProducts.forEach(product => {
+                    const updatedProducts = allProducts.map(product => {
                         if (sizesBySn[product.sn]) {
-                            product.sizes = sizesBySn[product.sn];
                             matchCount++;
+                            return { ...product, sizes: sizesBySn[product.sn] };
                         }
+                        return product;
                     });
                     
-                    showNotification(`${matchCount} products updated with size information.`);
-                    filterAndRender(); // Re-render products to show new size info
+                    try {
+                        await setDoc(catalogDocRef, { productsJSON: JSON.stringify(updatedProducts) });
+                        showNotification(`${matchCount} products updated with size information.`);
+                    } catch (error) {
+                        console.error("Error saving updated data to Firestore:", error);
+                        showNotification("Error saving size data. Please try again.");
+                    }
                 },
                 error: (error) => {
                     console.error("Error parsing size CSV:", error);
@@ -266,7 +282,16 @@
             renderProducts(allProducts);
         };
         
-        const resetToUploader = () => {
+        const resetToUploader = async (deleteData = true) => {
+            if (deleteData) {
+                try {
+                    await deleteDoc(catalogDocRef);
+                    showNotification("Catalog data cleared. You can now upload a new file.");
+                } catch (error) {
+                    console.error("Error deleting document:", error);
+                    showNotification("Could not clear the old catalog. Please refresh the page.");
+                }
+            }
             catalogSection.classList.add('hidden');
             cartButton.classList.add('hidden');
             uploaderSection.classList.remove('hidden');
@@ -274,9 +299,9 @@
             cart = [];
             updateCart();
             productGrid.innerHTML = '';
-            searchInput.value = '';
-            secondaryCatFilter.innerHTML = '';
-            tertiaryCatFilter.innerHTML = '';
+            if(searchInput) searchInput.value = '';
+            if(secondaryCatFilter) secondaryCatFilter.innerHTML = '';
+            if(tertiaryCatFilter) tertiaryCatFilter.innerHTML = '';
         };
 
         const populateFilters = () => {
@@ -397,25 +422,79 @@
             cartModal.classList.add('hidden');
         };
 
-        // --- Event Listeners ---
+        // --- Event Listeners & Initialization ---
+        const initApp = async () => {
+             // Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyAC3TaRrz8p0PFTiegcLCfhcg-ur4Ggp3w",
+  authDomain: "shein-product-catalog.firebaseapp.com",
+  projectId: "shein-product-catalog",
+  storageBucket: "shein-product-catalog.firebasestorage.app",
+  messagingSenderId: "880522082080",
+  appId: "1:880522082080:web:d268745e68275143288945",
+  measurementId: "G-WJXLNF2969"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);           
+
+            db = getFirestore(app);
+            auth = getAuth(app);
+            setLogLevel('debug');
+            catalogDocRef = doc(db, `artifacts/${appId}/public/data/products/catalogData`);
+
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                console.log("Firebase Auth successful. User:", auth.currentUser?.uid);
+                
+                onSnapshot(catalogDocRef, (docSnap) => {
+                    if (docSnap.exists() && docSnap.data().productsJSON) {
+                        try {
+                            allProducts = JSON.parse(docSnap.data().productsJSON);
+                            displayCatalog();
+                        } catch (e) {
+                            console.error("Error parsing products from Firestore:", e);
+                            resetToUploader(false);
+                        }
+                    } else {
+                        resetToUploader(false);
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase Authentication Error:", error);
+                showNotification("Could not connect to the database. Running in local mode.");
+            }
+        };
+
+        // Standard event listeners
         dropzone.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('drag-over'); });
         dropzone.addEventListener('dragenter', (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('drag-over'); });
         dropzone.addEventListener('dragleave', (e) => { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('drag-over'); });
         dropzone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+            e.preventDefault(); e.stopPropagation();
             dropzone.classList.remove('drag-over');
             handleFile(e.dataTransfer.files[0]);
         });
         dropzone.addEventListener('click', () => fileInput.click());
         browseBtn.addEventListener('click', (e) => { e.stopPropagation(); fileInput.click(); });
         fileInput.addEventListener('change', (e) => { handleFile(e.target.files[0]); e.target.value = null; });
-        
         uploadSizeFileBtn.addEventListener('click', () => sizeFileInput.click());
         sizeFileInput.addEventListener('change', (e) => { handleSizeFile(e.target.files[0]); e.target.value = null; });
-
         modalCloseBtn.addEventListener('click', () => notificationModal.classList.add('hidden'));
-        backToUploadBtn.addEventListener('click', resetToUploader);
+        backToUploadBtn.addEventListener('click', () => resetToUploader(true));
         searchInput.addEventListener('input', filterAndRender);
         secondaryCatFilter.addEventListener('change', filterAndRender);
         tertiaryCatFilter.addEventListener('change', filterAndRender);
@@ -425,7 +504,6 @@
             tertiaryCatFilter.value = 'All Product Categories';
             filterAndRender();
         });
-
         productGrid.addEventListener('click', (e) => {
             if (e.target.classList.contains('add-to-cart-btn')) {
                 const sn = e.target.dataset.sn;
@@ -440,7 +518,6 @@
                 }
             }
         });
-        
         cartItemsContainer.addEventListener('click', (e) => {
             if (e.target.classList.contains('remove-from-cart-btn')) {
                 const snToRemove = e.target.dataset.sn;
@@ -456,10 +533,12 @@
                 updateCart();
             }
         });
-        
         cartButton.addEventListener('click', () => cartModal.classList.remove('hidden'));
         cartCloseBtn.addEventListener('click', () => cartModal.classList.add('hidden'));
         checkoutBtn.addEventListener('click', handleCheckout);
+
+        // Initialize the App
+        initApp();
     </script>
 </body>
 </html>
