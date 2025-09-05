@@ -148,9 +148,8 @@
     <script type="module">
         // Firebase Imports
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        // import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, onSnapshot, setDoc, deleteDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, onSnapshot, setDoc, deleteDoc, setLogLevel, collection, writeBatch, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // DOM Elements
         const uploaderSection = document.getElementById('uploader-section');
@@ -188,13 +187,23 @@
         // State
         let allProducts = [];
         let cart = [];
-        let db, auth, catalogDocRef;
+        let db, auth, productsCollectionRef;
         let isDbConnected = false;
 
         // --- Functions ---
         const showNotification = (message) => {
             modalMessage.textContent = message;
             notificationModal.classList.remove('hidden');
+        };
+
+        const processInBatches = async (items, processFunction) => {
+            const batchSize = 500; // Firestore batch limit
+            for (let i = 0; i < items.length; i += batchSize) {
+                const batchItems = items.slice(i, i + batchSize);
+                const batch = writeBatch(db);
+                batchItems.forEach(item => processFunction(batch, item));
+                await batch.commit();
+            }
         };
 
         const handleFile = (file, isAppending = false) => {
@@ -232,35 +241,46 @@
                         return;
                     }
 
-                    let productsToSave = [];
-                    let notificationMessage = "";
-
-                    if (isAppending) {
-                        const existingSns = new Set(allProducts.map(p => p.sn));
-                        const newProducts = parsedProducts.filter(p => !existingSns.has(p.sn));
-                        productsToSave = [...allProducts, ...newProducts];
-                        notificationMessage = `${newProducts.length} new SKU(s) added to the catalog.`;
-                    } else {
-                        productsToSave = parsedProducts;
-                        notificationMessage = "Catalog created and saved successfully!";
-                    }
-
                     if (isDbConnected) {
                         try {
-                            await setDoc(catalogDocRef, { productsJSON: JSON.stringify(productsToSave) });
-                             // Update local state and UI immediately for better UX. 
-                            // The onSnapshot listener will keep it in sync with any other changes.
-                            allProducts = productsToSave;
+                            let productsToSave = [];
+                            let notificationMessage = "";
+
+                            if (isAppending) {
+                                const existingSns = new Set(allProducts.map(p => p.sn));
+                                const newProducts = parsedProducts.filter(p => !existingSns.has(p.sn));
+                                productsToSave = newProducts; // Only save new products
+                                notificationMessage = `${newProducts.length} new SKU(s) added to the catalog.`;
+                            } else {
+                                // For a new upload, we'll replace all data. Deleting first is safer.
+                                await resetToUploader(true, false); // Delete data without showing uploader
+                                productsToSave = parsedProducts;
+                                notificationMessage = "Catalog created and saved successfully!";
+                            }
+
+                            await processInBatches(productsToSave, (batch, product) => {
+                                const productRef = doc(db, "products", product.sn);
+                                batch.set(productRef, product);
+                            });
+                            
                             displayCatalog();
                             showNotification(notificationMessage);
+
                         } catch (error) {
                             console.error("Error saving to Firestore:", error);
                             showNotification("Error saving file. Please check Firestore rules and API key restrictions.");
                         }
                     } else {
-                        allProducts = productsToSave;
+                        // Handle local mode (no database)
+                        if(isAppending) {
+                            const existingSns = new Set(allProducts.map(p => p.sn));
+                            const newProducts = parsedProducts.filter(p => !existingSns.has(p.sn));
+                            allProducts = [...allProducts, ...newProducts];
+                        } else {
+                            allProducts = parsedProducts;
+                        }
                         displayCatalog();
-                        showNotification("Catalog loaded in local mode. Data will not be saved online.");
+                        showNotification("Catalog loaded in local mode.");
                     }
                 },
                 error: (error) => {
@@ -293,25 +313,29 @@
                         });
                     });
 
-                    let matchCount = 0;
-                    const updatedProducts = allProducts.map(product => {
-                        if (sizesBySn[product.sn]) {
-                            matchCount++;
-                            return { ...product, sizes: sizesBySn[product.sn] };
-                        }
-                        return product;
-                    });
-                    
+                    const updates = Object.keys(sizesBySn).map(sn => ({ sn, sizes: sizesBySn[sn] }));
+
                     if (isDbConnected) {
                         try {
-                            await setDoc(catalogDocRef, { productsJSON: JSON.stringify(updatedProducts) });
-                            showNotification(`${matchCount} products updated with size information.`);
+                           await processInBatches(updates, (batch, item) => {
+                                const productRef = doc(db, "products", item.sn);
+                                batch.update(productRef, { sizes: item.sizes });
+                           });
+                           showNotification(`${updates.length} products updated with size information.`);
                         } catch (error) {
-                            console.error("Error saving updated data to Firestore:", error);
+                            console.error("Error updating sizes in Firestore:", error);
                             showNotification("Error saving size data. Please try again.");
                         }
                     } else {
-                        allProducts = updatedProducts;
+                        // Local mode update
+                        let matchCount = 0;
+                        allProducts = allProducts.map(product => {
+                           if(sizesBySn[product.sn]) {
+                               matchCount++;
+                               return { ...product, sizes: sizesBySn[product.sn] };
+                           }
+                           return product;
+                        });
                         filterAndRender();
                         showNotification(`${matchCount} products updated with size information (local mode).`);
                     }
@@ -331,28 +355,33 @@
             renderProducts(allProducts);
         };
         
-        const resetToUploader = async (deleteData = true) => {
+        const resetToUploader = async (deleteData = true, showUploader = true) => {
             if (isDbConnected && deleteData) {
                 try {
-                    await deleteDoc(catalogDocRef);
-                    showNotification("Catalog data cleared. You can now upload a new file.");
+                    const querySnapshot = await getDocs(productsCollectionRef);
+                    await processInBatches(querySnapshot.docs, (batch, doc) => {
+                        batch.delete(doc.ref);
+                    });
+                    if (showUploader) showNotification("Catalog data cleared.");
                 } catch (error) {
-                    console.error("Error deleting document:", error);
-                    showNotification("Could not clear the old catalog. Please refresh the page.");
+                    console.error("Error deleting documents:", error);
+                    if (showUploader) showNotification("Could not clear the old catalog.");
                 }
             } else if (!isDbConnected && deleteData) {
                 allProducts = []; // Just clear the local array
             }
 
-            catalogSection.classList.add('hidden');
-            cartButton.classList.add('hidden');
-            uploaderSection.classList.remove('hidden');
-            cart = [];
-            updateCart();
-            productGrid.innerHTML = '';
-            if(searchInput) searchInput.value = '';
-            if(secondaryCatFilter) secondaryCatFilter.innerHTML = '';
-            if(tertiaryCatFilter) tertiaryCatFilter.innerHTML = '';
+            if(showUploader){
+                catalogSection.classList.add('hidden');
+                cartButton.classList.add('hidden');
+                uploaderSection.classList.remove('hidden');
+                cart = [];
+                updateCart();
+                productGrid.innerHTML = '';
+                if(searchInput) searchInput.value = '';
+                if(secondaryCatFilter) secondaryCatFilter.innerHTML = '';
+                if(tertiaryCatFilter) tertiaryCatFilter.innerHTML = '';
+            }
         };
 
         const populateFilters = () => {
@@ -475,7 +504,6 @@
 
         // --- Event Listeners & Initialization ---
         const initApp = async () => {
-            // Your web app's Firebase configuration
             const firebaseConfig = {
               apiKey: "AIzaSyAC3TaRrz8p0PFTiegcLCfhcg-ur4Ggp3w",
               authDomain: "shein-product-catalog.firebaseapp.com",
@@ -488,47 +516,32 @@
 
             isDbConnected = true;
             const app = initializeApp(firebaseConfig);
-            // const analytics = getAnalytics(app); // Analytics is not essential and can cause permission errors in some environments.
             db = getFirestore(app);
             auth = getAuth(app);
             setLogLevel('debug');
-            // SIMPLIFIED DATABASE PATH for standalone deployment
-            catalogDocRef = doc(db, 'products/catalogData');
+            productsCollectionRef = collection(db, 'products');
 
             try {
                 await signInAnonymously(auth);
                 console.log("Firebase Auth successful. User:", auth.currentUser?.uid);
                 
-                onSnapshot(catalogDocRef, (docSnap) => {
-                    const hasData = docSnap.exists() && docSnap.data().productsJSON;
-                    
-                    if (hasData) {
-                        try {
-                            const productsFromDB = JSON.parse(docSnap.data().productsJSON);
-                            allProducts = Array.isArray(productsFromDB) ? productsFromDB : [];
-                        } catch (e) {
-                            console.error("Error parsing products from Firestore:", e);
-                            allProducts = [];
-                        }
-                    } else {
-                        allProducts = [];
-                    }
+                onSnapshot(productsCollectionRef, (querySnapshot) => {
+                    allProducts = querySnapshot.docs.map(doc => doc.data());
 
-                    // Always update the visibility of the "View Catalog" button based on whether data exists.
                     viewCatalogBtn.classList.toggle('hidden', allProducts.length === 0);
 
-                    // If we are currently viewing the catalog, we need to react to changes.
                     if (!catalogSection.classList.contains('hidden')) {
                         if (allProducts.length > 0) {
-                            // Data was updated (or added) while viewing, so re-render the products.
                             populateFilters();
                             filterAndRender();
                         } else {
-                            // Data was deleted while we were viewing it, so go back to the uploader.
                             resetToUploader(false);
                             showNotification("The catalog has been cleared.");
                         }
                     }
+                }, (error) => {
+                     console.error("Snapshot listener error:", error);
+                     showNotification("Error listening to database updates. Please refresh.");
                 });
 
             } catch (error) {
